@@ -20,10 +20,14 @@ import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.MinMaxPriorityQueue;
 import com.google.common.util.concurrent.Uninterruptibles;
+import com.linkedin.pinot.common.config.ColumnPartitionConfig;
+import com.linkedin.pinot.common.config.SegmentPartitionConfig;
 import com.linkedin.pinot.common.config.TableConfig;
 import com.linkedin.pinot.common.config.TableNameBuilder;
 import com.linkedin.pinot.common.metadata.ZKMetadataProvider;
+import com.linkedin.pinot.common.metadata.segment.ColumnPartitionMetadata;
 import com.linkedin.pinot.common.metadata.segment.LLCRealtimeSegmentZKMetadata;
+import com.linkedin.pinot.common.metadata.segment.SegmentPartitionMetadata;
 import com.linkedin.pinot.common.metadata.stream.KafkaStreamMetadata;
 import com.linkedin.pinot.common.metrics.ControllerMeter;
 import com.linkedin.pinot.common.metrics.ControllerMetrics;
@@ -57,6 +61,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -69,6 +74,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.math.IntRange;
 import org.apache.helix.AccessOption;
 import org.apache.helix.ControllerChangeListener;
 import org.apache.helix.HelixAdmin;
@@ -298,6 +304,12 @@ public class PinotLLCRealtimeSegmentManager {
       metadata.setSegmentName(segName);
       metadata.setStatus(CommonConstants.Segment.Realtime.Status.IN_PROGRESS);
 
+      // Add the partition metadata if available.
+      SegmentPartitionMetadata partitionMetadata = getColumnMetadata(realtimeTableName, i);
+      if (partitionMetadata != null) {
+        metadata.setPartitionMetadata(partitionMetadata);
+      }
+
       segmentZKMetadatas.add(metadata);
       idealStateEntries.put(segName, instances);
     }
@@ -442,6 +454,26 @@ public class PinotLLCRealtimeSegmentManager {
     return idealState;
   }
 
+  private SegmentPartitionMetadata getColumnMetadata(String tableName, int partitionId) {
+    TableConfig tableConfig = ZKMetadataProvider.getRealtimeTableConfig(_propertyStore, tableName);
+    SegmentPartitionMetadata partitionMetadata = null;
+
+    // TODO: check the table config if we are using partition aware realtime routing.
+    Map<String, ColumnPartitionMetadata> partitionMetadataMap = new HashMap<>();
+    SegmentPartitionConfig partitionConfig = tableConfig.getIndexingConfig().getSegmentPartitionConfig();
+    if (partitionConfig != null) {
+      Map<String, ColumnPartitionConfig> columnPartitionMap = partitionConfig.getColumnPartitionMap();
+      for (Map.Entry<String, ColumnPartitionConfig> entry : columnPartitionMap.entrySet()) {
+        String column = entry.getKey();
+        ColumnPartitionConfig columnPartitionConfig = entry.getValue();
+        partitionMetadataMap.put(column, new ColumnPartitionMetadata(columnPartitionConfig.getFunctionName(),
+            columnPartitionConfig.getNumPartitions(), Collections.singletonList(new IntRange(partitionId))));
+      }
+      partitionMetadata = new SegmentPartitionMetadata(partitionMetadataMap);
+    }
+    return partitionMetadata;
+  }
+
   protected List<String> getExistingSegments(String realtimeTableName) {
     String propStorePath = ZKMetadataProvider.constructPropertyStorePathForResource(realtimeTableName);
     return  _propertyStore.getChildNames(propStorePath, AccessOption.PERSISTENT);
@@ -555,6 +587,13 @@ public class PinotLLCRealtimeSegmentManager {
     ZNRecord newZnRecord =
         makeZnRecordForNewSegment(rawTableName, newInstances.size(), newStartOffset, newSegmentNameStr);
     final LLCRealtimeSegmentZKMetadata newSegmentZKMetadata = new LLCRealtimeSegmentZKMetadata(newZnRecord);
+
+    // Add the partition metadata if available.
+    SegmentPartitionMetadata partitionMetadata = getColumnMetadata(realtimeTableName, partitionId);
+    if (partitionMetadata != null) {
+      newSegmentZKMetadata.setPartitionMetadata(partitionMetadata);
+    }
+
     updateFlushThresholdForSegmentMetadata(newSegmentZKMetadata, partitionAssignment,
         getRealtimeTableFlushSizeForTable(rawTableName));
     newZnRecord = newSegmentZKMetadata.toZNRecord();
@@ -958,7 +997,7 @@ public class PinotLLCRealtimeSegmentManager {
    * When all replicas of this segment are marked offline, the ValidationManager, in its next
    * run, will auto-create a new segment with the appropriate offset.
    * See {@link #createConsumingSegment(String, Set, List, TableConfig)}
-  */
+   */
   public void segmentStoppedConsuming(final LLCSegmentName segmentName, final String instance) {
     String rawTableName = segmentName.getTableName();
     String realtimeTableName = TableNameBuilder.REALTIME.tableNameWithType(rawTableName);

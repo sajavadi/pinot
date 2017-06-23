@@ -21,10 +21,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.configuration.Configuration;
 import org.apache.helix.ZNRecord;
@@ -32,8 +29,6 @@ import org.apache.helix.model.ExternalView;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 
-import com.linkedin.pinot.broker.pruner.SegmentPrunerContext;
-import com.linkedin.pinot.broker.routing.RoutingTableLookupRequest;
 import com.linkedin.pinot.common.config.TableConfig;
 import com.linkedin.pinot.common.metadata.ZKMetadataProvider;
 import com.linkedin.pinot.common.metadata.segment.ColumnPartitionMetadata;
@@ -42,21 +37,10 @@ import com.linkedin.pinot.common.metadata.segment.SegmentPartitionMetadata;
 import com.linkedin.pinot.common.metadata.segment.SegmentZKMetadata;
 import com.linkedin.pinot.common.response.ServerInstance;
 import com.linkedin.pinot.transport.common.SegmentId;
-import com.linkedin.pinot.transport.common.SegmentIdSet;
 
-public class PartitionAwareOfflineRoutingTableBuilder extends AbstractRoutingTableBuilder {
-  private static final String PARTITION_METADATA_PRUNER = "PartitionZKMetadataPruner";
+public class PartitionAwareOfflineRoutingTableBuilder extends AbstractPartitionAwareRoutingTableBuilder {
   private static final int TABLE_LEVEL_PARTITION_NUMBER = 0;
-  private static final int NO_PARTITION_NUMBER = -1;
 
-  Map<SegmentId, Map<Integer, ServerInstance>> _segmentId2ServersMapping = new HashMap<>();
-  AtomicReference<Map<SegmentId, Map<Integer, ServerInstance>>> _mappingRef = new AtomicReference<>(_segmentId2ServersMapping);
-  Map<SegmentId, SegmentZKMetadata> _segment2SegmentZkMetadataMap = new ConcurrentHashMap<>();
-  private ZkHelixPropertyStore<ZNRecord> _propertyStore;
-  private SegmentZKMetadataPrunerService _pruner;
-  private Random _random = new Random();
-  private TableConfig _tableConfig;
-  private int _numReplicas;
   private boolean _isPartitionLevelReplicaGroupAssignment;
 
   @Override
@@ -145,41 +129,6 @@ public class PartitionAwareOfflineRoutingTableBuilder extends AbstractRoutingTab
     _mappingRef.set(segmentId2ServersMapping);
   }
 
-  @Override
-  public Map<ServerInstance, SegmentIdSet> findServers(RoutingTableLookupRequest request) {
-    Map<ServerInstance, SegmentIdSet> result = new HashMap<>();
-    Map<SegmentId, Map<Integer, ServerInstance>> mappingReference = _mappingRef.get();
-    SegmentPrunerContext prunerContext = new SegmentPrunerContext(request.getBrokerRequest());
-    int replicaGroupId = _random.nextInt(_numReplicas);
-    for (SegmentId segmentId : mappingReference.keySet()) {
-      // Check if the segment can be pruned
-      SegmentZKMetadata segmentZKMetadata = _segment2SegmentZkMetadataMap.get(segmentId);
-      boolean segmentPruned = _pruner.prune(segmentZKMetadata, prunerContext);
-
-      // If the segment cannot be pruned, we need to pick the server.
-      if (!segmentPruned) {
-        Map<Integer, ServerInstance> replicaId2ServerMapping = mappingReference.get(segmentId);
-        ServerInstance serverInstance = replicaId2ServerMapping.get(replicaGroupId);
-        // pick any other available server instance when the node is down/disabled
-        if (serverInstance == null) {
-          if (!replicaId2ServerMapping.isEmpty()) {
-            serverInstance = replicaId2ServerMapping.values().iterator().next();
-          } else {
-            // No server is found for this segment.
-            continue;
-          }
-        }
-        SegmentIdSet segmentIdSet = result.get(serverInstance);
-        if (segmentIdSet == null) {
-          segmentIdSet = new SegmentIdSet();
-          result.put(serverInstance, segmentIdSet);
-        }
-        segmentIdSet.addSegment(segmentId);
-      }
-    }
-    return result;
-  }
-
   /**
    * Assumes there is only one column
    *
@@ -209,10 +158,4 @@ public class PartitionAwareOfflineRoutingTableBuilder extends AbstractRoutingTab
     // If we use the table level replica group assignment, we can simply return the default partition number.
     return TABLE_LEVEL_PARTITION_NUMBER;
   }
-
-  @Override
-  public boolean isPartitionAware() {
-    return true;
-  }
-
 }

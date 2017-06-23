@@ -16,6 +16,7 @@
 package com.linkedin.pinot.broker.routing;
 
 import com.linkedin.pinot.broker.routing.builder.PartitionAwareOfflineRoutingTableBuilder;
+import com.linkedin.pinot.broker.routing.builder.PartitionAwareRealtimeRoutingTableBuilder;
 import com.linkedin.pinot.common.config.SegmentsValidationAndRetentionConfig;
 import com.linkedin.pinot.common.utils.CommonConstants;
 import java.util.HashSet;
@@ -45,7 +46,13 @@ public class RoutingTableBuilderFactory {
   private ZkHelixPropertyStore<ZNRecord> _propertyStore;
 
   enum RoutingTableBuilderName {
-    DefaultOffline, DefaultRealtime, BalancedRandom, KafkaLowLevel, KafkaHighLevel, PartitionAwareOffline
+    DefaultOffline,
+    DefaultRealtime,
+    BalancedRandom,
+    KafkaLowLevel,
+    KafkaHighLevel,
+    PartitionAwareOffline,
+    PartitionAwareRealtime
   }
 
   public RoutingTableBuilderFactory(Configuration configuration, ZkHelixPropertyStore<ZNRecord> propertyStore) {
@@ -112,6 +119,9 @@ public class RoutingTableBuilderFactory {
         } else {
           builder = new PartitionAwareOfflineRoutingTableBuilder();
         }
+        break;
+      case PartitionAwareRealtime:
+        builder = new PartitionAwareRealtimeRoutingTableBuilder();
         break;
     }
     builder.init(_configuration, tableConfig, _propertyStore);
